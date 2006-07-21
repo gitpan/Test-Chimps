@@ -13,7 +13,6 @@ no_index:
 requires: 
   Algorithm::TokenBucket: 0
   Class::Accessor: 0
-  Date::Parse: 0
   DateTime: 0
   HTML::Mason: 0
   Jifty::DBI::Collection: 0
@@ -25,4 +24,4 @@ requires:
   Test::TAP::HTMLMatrix: 0
   Test::TAP::Model::Visual: 0
   YAML::Syck: 0
-version: 0.02
+version: 0.03
