@@ -24,4 +24,4 @@ requires:
   Test::TAP::HTMLMatrix: 0
   Test::TAP::Model::Visual: 0
   YAML::Syck: 0
-version: 0.06
+version: 0.07
