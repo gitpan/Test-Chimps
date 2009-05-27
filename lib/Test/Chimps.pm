@@ -1,16 +1,18 @@
 package Test::Chimps;
 
+use 5.008;
+
 =head1 NAME
 
 Test::Chimps - Collaborative Heterogeneous Infinite Monkey Perfectionification Service
 
 =head1 VERSION
 
-Version 0.07
+Version 0.07_01
 
 =cut
 
-our $VERSION = '0.07';
+our $VERSION = '0.07_01';
 
 =head1 SYNOPSIS
 

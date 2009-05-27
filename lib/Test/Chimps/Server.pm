@@ -19,12 +19,13 @@ use Jifty::DBI::Handle;
 use Jifty::DBI::SchemaGenerator;
 use Params::Validate qw<:all>;
 use Storable    qw<store_fd fd_retrieve nfreeze thaw>;
-use Test::TAP::HTMLMatrix;
-use Test::TAP::Model::Visual;
+use TAP::Formatter::HTML;
+use TAP::Parser::Aggregator;
+use TAP::Harness::Archive;
 use YAML::Syck;
 use DateTime;
 
-use constant PROTO_VERSION => 0.2;
+use constant PROTO_VERSION => 1.0;
 
 =head1 NAME
 
@@ -55,23 +56,29 @@ Mandatory.  Base directory where report data will be stored.
 
 =item * bucket_file
 
-Name of bucket database file (see L<Algorithm::Bucket>).  Defaults
+Name of bucket database file (see L<Algorithm::TokenBucket>).  Defaults
 to 'bucket.dat'.
 
 =item * burst_rate
 
-Burst upload rate allowed (see L<Algorithm::Bucket>).  Defaults to
+Burst upload rate allowed (see L<Algorithm::TokenBucket>).  Defaults to
 5.
 
-=item * database_dir
+=item * database
 
-Directory under bsae_dir where the SQLite database will be stored.
-Defaults to 'chimpsdb'.
+Name of the database
 
-=item * database_file
+=item * database_driver
 
-File under database_dir to use as the SQLite database.  Defaults to
-'database'.
+Database driver to use
+
+=item * database_user
+
+User to connect ot the database as
+
+=item * database_password
+
+Password to connect to the database with
 
 =item * list_template
 
@@ -86,7 +93,7 @@ subclassing C<Lister>.
 
 =item * max_rate
 
-Maximum upload rate allowed (see L<Algorithm::Bucket>).  Defaults
+Maximum upload rate allowed (see L<Algorithm::TokenBucket>).  Defaults
 to 1/30.
 
 =item * max_size
@@ -117,7 +124,7 @@ use base qw/Class::Accessor/;
 
 __PACKAGE__->mk_ro_accessors(
   qw/base_dir bucket_file max_rate max_size
-    max_reports_per_subcategory database_dir database_file
+    max_reports_per_subcategory database database_driver database_user database_password
     template_dir list_template lister
     variables_validation_spec handle/
 );
@@ -152,15 +159,25 @@ sub _init {
           "greater than or equal to 0" => sub { $_[0] >= 0 }
         }
       },
-      database_dir => {
+      database => {
         type     => SCALAR,
         optional => 1,
-        default  => 'chimpsdb'
+        default  => 'chimpsdb/database'
       },
-      database_file => {
+      database_driver => {
         type     => SCALAR,
         optional => 1,
-        default  => 'database'
+        default  => 'SQLite'
+      },
+      database_user => {
+        type     => SCALAR,
+        optional => 1,
+        default  => ''
+      },
+      database_password => {
+        type     => SCALAR,
+        optional => 1,
+        default  => ''
       },
       variables_validation_spec => {
         type     => HASHREF,
@@ -200,11 +217,6 @@ sub _init {
           "greater than or equal to 0" => sub { $_[0] >= 0 }
         }
       },
-      report_dir => {
-        type     => SCALAR,
-        default  => 'reports',
-        optional => 1
-      },
       template_dir => {
         type     => SCALAR,
         default  => 'templates',
@@ -219,36 +231,57 @@ sub _init {
 
   if (defined $self->variables_validation_spec) {
     foreach my $var (keys %{$self->variables_validation_spec}) {
-      package Test::Chimps::Report::Schema;
-      column($var, type(is('text')));
+      my $column = Test::Chimps::Report->add_column($var);
+      $column->type("text");
+      $column->writable(1);
+      $column->readable(1);
+      Test::Chimps::Report->_init_methods_for_column($column);
     }
   }
 
-  my $dbdir = File::Spec->catdir($self->base_dir,
-                                 $self->database_dir);
-  if (! -e $dbdir) {
-    mkpath($dbdir);
-  }
-  
-  my $dbname = File::Spec->catfile($dbdir,
-                                   $self->database_file);
   $self->{handle} = Jifty::DBI::Handle->new();
+  eval {
+    $self->handle->connect(driver => $self->database_driver,
+                           database => $self->database,
+                           user => $self->database_user,
+                           password => $self->database_password,
+                          );
+  };
 
-  # create the table if the db doesn't exist.  ripped out of
-  # Jifty::Script::Schema because this stuff should be in
-  # Jifty::DBI, but isn't
-  if (! -e $dbname) {
+  my $error = $@;
+  if ( $error =~ /database .*? does not exist/i
+        or $error =~ /unknown database/i ) {
+    if ($self->database_driver ne 'SQLite') {
+      warn "Creating database\n";
+      my $dbname = $self->database;
+      $dbname = 'template1' if $self->database_driver =~ /Pg/;
+      $dbname = '' if $self->database_driver eq 'mysql';
+      my $create_handle = Jifty::DBI::Handle->new;
+      $create_handle->connect(driver => $self->database_driver,
+                              database => $dbname,
+                              user => $self->database_user,
+                              password => $self->database_password,
+                            );
+
+      my $query = "CREATE DATABASE ".$self->database;
+      $query .= " TEMPLATE template0" if $self->database_driver =~ /Pg/;
+      $create_handle->simple_query($query);
+      $create_handle->disconnect;
+
+      $self->{handle} = Jifty::DBI::Handle->new();
+      $self->handle->connect(driver => $self->database_driver,
+                             database => $self->database,
+                             user => $self->database_user,
+                             password => $self->database_password,
+                            );
+    }
+
+    warn "Running create statements\n";
     my $sg = Jifty::DBI::SchemaGenerator->new($self->handle);
     $sg->add_model(Test::Chimps::Report->new(handle => $self->handle));
-  
-    $self->handle->connect(driver => 'SQLite',
-                           database => $dbname);
-    # for non SQLite
-#    $self->handle->simple_query('CREATE DATABASE database');
     $self->handle->simple_query($_) for $sg->create_table_sql_statements;
-  } else {
-    $self->handle->connect(driver => 'SQLite',
-                           database => $dbname);
+  } elsif ($error) {
+    die $error;
   }
 }
 
@@ -277,9 +310,8 @@ sub _process_upload {
   my $cgi = shift;
 
   print $cgi->header("text/plain");
-  $self->_limit_rate($cgi);
+#  $self->_limit_rate($cgi);
   $self->_validate_params($cgi);  
-  $self->_variables_validation_spec($cgi);
   $self->_add_report($cgi);
 
   print "ok";
@@ -328,28 +360,27 @@ sub _validate_params {
     exit;
   }
 
-  if(! $cgi->param("model_structure")) {
-    print "No model structure given!";
+  if(! $cgi->param("archive")) {
+    print "No archive given!";
     exit;
   }
 
-#  uncompress_smoke();
 }
 
 sub _variables_validation_spec {
   my $self = shift;
-  my $cgi = shift;
+  my $meta = shift;
+  my %meta = %{$meta};
   
   if (defined $self->{variables_validation_spec}) {
-    my $report_variables = thaw($cgi->param('report_variables'));
     eval {
-      validate(@{[%$report_variables]}, $self->{variables_validation_spec});
+      validate(@{[%meta]}, $self->{variables_validation_spec});
     };
     if (defined $@ && $@) {
       # XXX: doesn't dump subroutines because we're using YAML::Syck
       print "This server accepts specific report variables.  It's validation ",
         "string looks like this:\n", Dump($self->{variables_validation_spec}),
-          "\nYour report variables look like this:\n", $cgi->param('report_variables');
+          "\nYour report variables look like this:\n", Dump(\%meta);
       exit;
     }
   }
@@ -359,44 +390,64 @@ sub _add_report {
   my $self = shift;
   my $cgi = shift;
 
-  my $params = {};
+  # We hate CGI.pm's fake filehandle objects -- move to a real
+  # tempfile
+  my $archive = $cgi->upload('archive');
+  my $tmpfile = File::Temp->new( SUFFIX => ".tar.gz" );
+  print $tmpfile do {local $/; <$archive>};
+  close $tmpfile;
 
-  $params->{timestamp} = DateTime->from_epoch(epoch => time);
-  
-  my $report_variables = thaw($cgi->param('report_variables'));
-  foreach my $var (keys %{$report_variables}) {
-    $params->{$var} = $report_variables->{$var};
+  my ($start, $end, $meta);
+  my $formatter = TAP::Formatter::HTML->new;
+  $formatter->verbosity(-3);
+  $formatter->js_uris(['/jquery-1.2.6.pack.js','/default_report.js']);
+  $formatter->css_uris(['/default_page.css',   '/default_report.css']);
+  my $aggregator = TAP::Harness::Archive->aggregator_from_archive( {
+      archive => "$tmpfile",
+      made_parser_callback => sub {
+          my ($parser, $file, $full_path) = @_;
+          my $session = $formatter->open_test( $file, $parser ); 
+          while ( defined( my $result = $parser->next ) ) {
+              $session->result($result);
+          }
+          $session->close_test;
+      },
+      meta_yaml_callback => sub {
+          ($meta) = @_;
+          $start = $meta->[0]->{start_time};
+          $end   = $meta->[0]->{stop_time};
+          $formatter->prepare(@{$meta->[0]->{file_order}});
+      }
+  } );
+  $self->_variables_validation_spec($meta->[0]{extra_properties});
+
+  # Such a hack, but TAP::Harness::Archive doesn't store the actual benchmark values. 
+  $aggregator->{start_time} = bless [$start, 0, 0, 0, 0, 0], 'Benchmark';
+  $aggregator->{end_time} = bless [$end, 0, 0, 0, 0, 0], 'Benchmark';
+
+  $formatter->summary( $aggregator );
+
+  my %params = (
+      %{$meta->[0]{extra_properties}},
+      timestamp     => DateTime->from_epoch(epoch => time),
+      total_passed  => scalar $aggregator->passed,
+      total_failed  => scalar $aggregator->failed,
+      total_ratio   => $aggregator->total ? $aggregator->passed / $aggregator->total : 0,
+      total_seen    => scalar $aggregator->total,
+      total_skipped => scalar $aggregator->skipped,
+      total_todo    => scalar $aggregator->todo,
+      total_unexpectedly_succeeded => scalar $aggregator->todo_passed,
+      duration      => $end - $start,
+      report_html   => ${$formatter->html},
+  );
+  my $report = Test::Chimps::Report->new( handle => $self->handle );
+  my ($id, $msg) = $report->create(%params);
+  unless ($id) {
+      open(FAIL, ">/tmp/report-fail");
+      print FAIL Dump(\%params);
+      close FAIL;
+      croak "Couldn't add report to database: $msg\n";
   }
-  
-  my $model = Test::TAP::Model::Visual->new_with_struct(thaw($cgi->param('model_structure')));
-
-  foreach my $var (
-    qw/total_ok
-    total_passed
-    total_nok
-    total_failed
-    total_percentage
-    total_ratio
-    total_seen
-    total_skipped
-    total_todo
-    total_unexpectedly_succeeded/
-    )
-  {
-
-    $params->{$var} = $model->$var;
-  }
-
-  $params->{model_structure} = thaw($cgi->param('model_structure'));
-  
-  my $matrix = Test::TAP::HTMLMatrix->new($model,
-                                          Dump(thaw($cgi->param('report_variables'))));
-  $matrix->has_inline_css(1);
-  $params->{report_html} = $matrix->detail_html;
-
-  my $report = Test::Chimps::Report->new(handle => $self->handle);
-
-  $report->create(%$params) or croak "Couldn't add report to database: $!\n";
 }
 
 sub _process_detail {
@@ -419,11 +470,32 @@ sub _process_listing {
 
   print $cgi->header();
 
-  my $report_coll = Test::Chimps::ReportCollection->new(handle => $self->handle);
-  $report_coll->unlimit;
+  my @projects = map {$_->[0]} @{$self->handle->simple_query("select project from reports group by project")->fetchall_arrayref([0])};
+
   my @reports;
-  while (my $report = $report_coll->next) {
-    push @reports, $report;
+  for my $projectname (@projects) {
+    my $report_coll = Test::Chimps::ReportCollection->new(handle => $self->handle);
+    $report_coll->limit( column => "project", value => $projectname, case_sensitive => 1 );
+    $report_coll->order_by( column => "timestamp", order => "DESC");
+    $report_coll->set_page_info( per_page => $self->max_reports_per_subcategory, current_page => 1);
+    $report_coll->columns(qw/id
+                             project
+                             revision
+                             timestamp
+                             committer
+                             duration
+
+                             total_ratio
+                             total_seen
+                             total_passed
+                             total_failed
+                             total_todo
+                             total_skipped
+                             total_unexpectedly_succeeded
+                            /);
+    while (my $report = $report_coll->next) {
+      push @reports, $report;
+    }
   }
 
   my $lister;

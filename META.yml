@@ -1,16 +1,26 @@
-abstract: Collaborative Heterogeneous Infinite Monkey Perfectionification Service
-author: Zev Benjamin, C<< <zev at cpan.org> >>
-build_requires: 
+---
+abstract: 'Collaborative Heterogeneous Infinite Monkey Perfectionification Service'
+author:
+  - 'Zev Benjamin, C<< <zev at cpan.org> >>'
+build_requires:
+  ExtUtils::MakeMaker: 6.42
   Test::Dependencies: 0
+configure_requires:
+  ExtUtils::MakeMaker: 6.42
 distribution_type: module
-generated_by: Module::Install version 0.63
+generated_by: 'Module::Install version 0.90'
 license: perl
+meta-spec:
+  url: http://module-build.sourceforge.net/META-spec-v1.4.html
+  version: 1.4
 name: Test-Chimps
-no_index: 
-  directory: 
+no_index:
+  directory:
+    - examples
     - inc
     - t
-requires: 
+    - xt
+requires:
   Algorithm::TokenBucket: 0
   Class::Accessor: 0
   DateTime: 0
@@ -21,7 +31,11 @@ requires:
   Jifty::DBI::Schema: 0
   Jifty::DBI::SchemaGenerator: 0
   Params::Validate: 0
-  Test::TAP::HTMLMatrix: 0
-  Test::TAP::Model::Visual: 0
+  TAP::Formatter::HTML: 0
+  TAP::Harness::Archive: 0
+  TAP::Parser::Aggregator: 0
   YAML::Syck: 0
-version: 0.07
+  perl: 5.8.0
+resources:
+  license: http://dev.perl.org/licenses/
+version: 0.07_01
